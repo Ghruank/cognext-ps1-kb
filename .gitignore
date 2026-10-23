@@ -12,3 +12,7 @@ storage/
 .cache/
 outputs/
 eval/.cache/
+*.aux
+*.toc
+*.out
+docs/report/build.log
