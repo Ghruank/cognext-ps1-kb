@@ -1,0 +1,144 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs,tabularx,enumitem,xcolor,listings}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{codebg}{HTML}{F4F4F4}
+\lstset{basicstyle=\ttfamily\small,backgroundcolor=\color{codebg},frame=single,
+        rulecolor=\color{gray!40},columns=fullflexible,keepspaces=true,
+        breaklines=true,xleftmargin=4pt,xrightmargin=4pt}
+\setlist{nosep,leftmargin=*}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+
+\newcommand{\role}[1]{\section*{\color{accent}#1}}
+
+\begin{document}
+
+{\LARGE\bfseries\color{accent} PS1 Team Split: Smart Knowledge Base for Agents}\\[2pt]
+{\large CognitionNext '26 \textbullet\ two roles, one contract}
+
+\vspace{6pt}
+Read both roles, then decide who takes which. The full architecture is in
+\texttt{reports/Novel RAG architecture for PS1.md} in the repo.
+
+\section*{Budget and constraints}
+\begin{itemize}
+  \item \textbf{OpenCode credits: \$10.} One full official evaluation over 100 questions costs about
+        \$1.5--2 (about 4M judge tokens). Generating the answers adds about \$0.30 per 100 questions.
+  \item Cache every judge call by its input hash, so nothing is paid for twice.
+  \item Tune on a fixed, stratified 25-question subset (about \$0.40 per run). Run the full 100 only
+        2--3 times: oracle, mid-build and final.
+  \item Person 1 tunes against a \textbf{free offline proxy}: fuzzy text overlap with the gold
+        chunks, with no LLM calls.
+  \item Serving is \textbf{CPU only}: bge-small int8 embeddings and Tesseract OCR; no bge-m3 and no
+        vision-language parsers. A cross-encoder used as a \emph{feature} is allowed (confirmed by
+        the PS author).
+  \item Model: \texttt{deepseek-v4.1-flash} (paid, thinking disabled), as recommended by the PS author.
+\end{itemize}
+
+\role{Person 1: Evidence Engine (retrieval, layers 1--4)}
+
+\textbf{Goal:} given \texttt{(collection, query)}, return the right set of paragraphs: correct
+documents and versions, and as many as the question needs, each with a calibrated relevance
+probability.
+
+\textbf{Owns}
+\begin{itemize}
+  \item \textbf{Ingestion:} PyMuPDF page text, with OCR for pages that have no text layer;
+        stripping repeated headers and footers; paragraph units of about 63 words plus markdown
+        tables; doc and page metadata on every unit.
+  \item \textbf{Catalogue:} a document card for each document (entity, type, period, jurisdiction);
+        MinHash version families; detection of consolidated texts; flags for units that differ
+        between versions.
+  \item \textbf{Indexes:} BM25 plus bge-small vectors.
+  \item \textbf{Relevance model:} a features table; LightGBM with folds grouped by question; Platt
+        calibration; the $\hat{G}$ estimate (expected number of gold chunks).
+  \item \textbf{Set selector:} expected-utility cutoff $k$, a recall floor, and at least one unit
+        per facet.
+\end{itemize}
+
+\textbf{Milestones}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Hour} & \textbf{Milestone} \\
+\midrule
+2  & Units for the whole corpus, with a word-count histogram matching gold \\
+5  & A candidate scorer working end to end \\
+8  & Calibrated probabilities, $\hat{G}$ and set selection \\
+10 & Ablations, then freeze \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Measured by:} the free gold-overlap proxy (precision and recall against the gold chunks) on
+held-out folds. Official context precision and recall at the checkpoints.
+
+\textbf{Suits someone who likes:} ML and information retrieval, feature engineering and data
+wrangling. Mostly offline work, with few LLM calls.
+
+\role{Person 2: Answer \& Platform (generation, API, evaluation, layers 5--6)}
+
+\textbf{Goal:} turn a selected evidence set into a gold-style answer the judge scores highly, and
+own everything the organisers touch.
+
+\textbf{Owns}
+\begin{itemize}
+  \item \textbf{Evaluation harness:} the official notebook class imported unmodified, a batch
+        runner, the judge cache, the budget tracker and the fixed 25-question subset.
+  \item \textbf{Oracle run (E1):} feed the gold chunks to the writer and tune the prompt until the
+        answer metrics stop improving. That measures the ceiling.
+  \item \textbf{Query planner:} one cheap call that returns JSON with the entities,
+        versions/dates, facets and answer type.
+  \item \textbf{Writer and claim gate:} evidence grouped by facet; answer length set by $\hat{G}$;
+        number and entity checks; abstention with the exact gold string
+        (\emph{``No information was retrieved for this question.''}).
+  \item \textbf{Platform:} FastAPI \texttt{/index} and \texttt{/query}; the required
+        \texttt{trace} array (\texttt{step\_name}, \texttt{description}, \texttt{input},
+        \texttt{output}); Langfuse cost and latency with manual usage details; deployment on
+        their server; the stated ingestion time.
+  \item \textbf{Write-up:} the 2--3 pages and the Langfuse export.
+\end{itemize}
+
+\textbf{Milestones}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Hour} & \textbf{Milestone} \\
+\midrule
+1  & Harness working; E0 baseline scored \\
+3  & Oracle ceiling measured and the writer prompt tuned \\
+6  & API skeleton live with trace and Langfuse, using Person 1's stub \\
+9  & Full pipeline end to end \\
+11 & Deployed, final evaluation run, write-up done \\
+\bottomrule
+\end{tabularx}
+
+\textbf{Measured by:} official answer precision and recall, first on the oracle and then end to
+end. Plus the API must be live and its responses must have the right shape.
+
+\textbf{Suits someone who likes:} LLM prompting, backend and API work, deployment and writing.
+
+\section*{The contract between the two}
+Agree this in the first 30 minutes, so both people can build against stubs.
+
+\begin{lstlisting}[language=Python]
+Unit = {"id", "doc", "pages": [int], "type": "prose|table|formula|visual",
+        "text", "section_path", "family_id", "version_role"}
+
+engine.index(zip_path, collection) -> IndexStats
+engine.select(collection, query, plan) -> {"units": [Unit + "p"], "G_hat": float,
+                                           "facets": {facet: [unit_id]}, "trace": [step]}
+\end{lstlisting}
+
+The \texttt{plan} comes from Person 2's query planner, so Person 1 doesn't have to parse queries.
+Each side's \texttt{trace} steps are merged into the API response.
+
+\section*{How to choose}
+Whoever is stronger in ML takes Person 1. Person 2 carries more of the scored-by-judges surface
+(API, deployment, write-up), so give it to whoever is better at shipping under time pressure.
+
+\end{document}
