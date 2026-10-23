@@ -1,0 +1,12 @@
+# data from organizers (large, not ours to redistribute)
+data/
+*.zip
+# secrets
+.env
+# python
+__pycache__/
+.venv/
+*.pyc
+# local indexes / caches
+storage/
+.cache/
