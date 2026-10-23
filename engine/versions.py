@@ -18,6 +18,16 @@ from itertools import combinations
 
 FAMILY_CONTAINMENT = 0.25
 SHARED_UNIT = 0.7
+CHANGE_SIM = 0.85  # cosine between version-specific paragraphs that are the same item in two versions
+
+_COMPARE = re.compile(r"\b(compar\w*|chang\w*|evolv\w*|versus|vs\.?|differ\w*|shift\w*|trend\w*|over the (?:past|last)|"
+                      r"year[- ]on[- ]year|between (?:the|its) (?:two|last)|across (?:the|its|both)|both (?:of )?(?:its|the)|"
+                      r"from \S+ to \S+|swing\w*|trace|before and after|relative to (?:a|last|the prior) year)\b", re.I)
+
+
+def query_intent(query: str) -> str:
+    """'compare' when the question spans versions or periods, else 'single'."""
+    return "compare" if _COMPARE.search(query) or len(_years(query)) >= 2 else "single"
 
 
 def _shingles(text: str, n: int = 5) -> set[int]:
@@ -84,6 +94,28 @@ class Lattice:
                 shared = any(len(sh & o) / max(1, len(sh)) >= SHARED_UNIT for o in others) if others else False
                 self.unit_role[u["id"]] = "shared" if shared else "delta"
 
+    def build_change_links(self, index) -> None:
+        """Pair version-specific paragraphs that are the same item in two versions of a family
+        (e.g. one financial-highlights paragraph with different figures). These become
+        graph edges, so evidence found in one version pulls in its counterpart."""
+        import numpy as np
+        pos = index.pos
+        self.change_links: list[tuple[str, str]] = []
+        for fam in self.members.values():
+            docs = [d for d in fam if d not in self.consolidated]
+            for a, b in combinations(docs, 2):
+                ua = [u["id"] for u in index.units if u["doc"] == a and self.unit_role.get(u["id"]) == "delta"]
+                ub = [u["id"] for u in index.units if u["doc"] == b and self.unit_role.get(u["id"]) == "delta"]
+                if not ua or not ub:
+                    continue
+                va, vb = index.vecs[[pos[i] for i in ua]], index.vecs[[pos[i] for i in ub]]
+                for s0 in range(0, len(ua), 2048):
+                    sims = va[s0:s0 + 2048] @ vb.T
+                    best = sims.argmax(1)
+                    for r, j in enumerate(best):
+                        if sims[r, j] >= CHANGE_SIM:
+                            self.change_links.append((ua[s0 + r], ub[int(j)]))
+
     def doc_features(self, doc: str, query: str) -> dict[str, float]:
         qy = _years(query)
         dy = self.doc_years.get(doc, set())
@@ -93,8 +125,12 @@ class Lattice:
         else:
             period = 1.0 if qy & dy else -1.0
         latest = max((max(self.doc_years[m], default=0) for m in fam), default=0)
+        compare = query_intent(query) == "compare"
+        # comparative questions want every version in the family; single-version ones the matching period
         return {"family_size": float(len(fam)), "is_consolidated": float(doc in self.consolidated),
-                "period_match": period, "is_latest": float(max(dy, default=0) == latest and len(fam) > 1)}
+                "period_match": period, "is_latest": float(max(dy, default=0) == latest and len(fam) > 1),
+                "q_compare": float(compare), "compare_x_family": float(compare and len(fam) > 1),
+                "single_x_mismatch": float(not compare and period < 0)}
 
     def summary(self) -> list[list[str]]:
         return [m for m in self.members.values() if len(m) > 1]

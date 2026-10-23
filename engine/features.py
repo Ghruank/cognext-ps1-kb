@@ -71,7 +71,8 @@ FEATURES = ["dense", "dense_z", "dense_pct", "bm25_z", "bm25_pct", "doc_route", 
             "is_table", "n_words", "nb_dense_max", "nb_bm25_max", "sec_dense_mean", "sec_dense_max",
             "doc_pos", "num_overlap", "dense_doc_z",
             # version-family lattice
-            "family_size", "is_consolidated", "period_match", "is_latest", "unit_shared"]
+            "family_size", "is_consolidated", "period_match", "is_latest", "unit_shared",
+            "q_compare", "compare_x_family", "single_x_mismatch"]
 
 
 def candidate_pool(router: Router, query: str, dense: np.ndarray, bm25: np.ndarray):
@@ -111,15 +112,22 @@ def candidate_pool(router: Router, query: str, dense: np.ndarray, bm25: np.ndarr
                     max((pd[j] for j in nb), default=pd[k]), max((pb[j] for j in nb), default=pb[k]),
                     sec_mean[k], sec_max[k], i / max(1, len(units)), len(qnums & nums), dense_doc_z[k],
                     v.get("family_size", 1), v.get("is_consolidated", 0), v.get("period_match", 0),
-                    v.get("is_latest", 0), float(lat is not None and lat.unit_role.get(u["id"]) == "shared")]
+                    v.get("is_latest", 0), float(lat is not None and lat.unit_role.get(u["id"]) == "shared"),
+                    v.get("q_compare", 0), v.get("compare_x_family", 0), v.get("single_x_mismatch", 0)]
     return idx, feats, route
 
 
-def pool_edges(index: Index, idx: np.ndarray, vec_knn: int = 5) -> np.ndarray:
-    """Evidence graph over a pool: reading order, same section, and semantic k-NN. Returns [2, E]."""
+def pool_edges(index: Index, idx: np.ndarray, vec_knn: int = 5, lattice=None) -> np.ndarray:
+    """Evidence graph over a pool: reading order, same section, semantic k-NN, and
+    cross-version change links from the lattice. Returns [2, E]."""
     units = index.units
     local = {int(u): k for k, u in enumerate(idx)}
     src, dst = [], []
+    for a, b in getattr(lattice, "change_links", []):
+        ka, kb = local.get(index.pos[a]), local.get(index.pos[b])
+        if ka is not None and kb is not None:
+            src += [ka, kb]
+            dst += [kb, ka]
     for k, i in enumerate(idx):
         j = int(i) + 1
         if j in local and units[j]["doc"] == units[int(i)]["doc"]:

@@ -32,7 +32,10 @@ def build_pools() -> list[dict]:
     index = Index.load("storage/train_index.pkl")
     catalog = json.load(open("storage/train_catalog.json"))
     labels = pickle.load(open("storage/train_labels.pkl", "rb"))
-    router = Router(index, catalog, pickle.load(open("storage/train_lattice.pkl", "rb")))
+    lattice = pickle.load(open("storage/train_lattice.pkl", "rb"))
+    lattice.build_change_links(index)
+    print(f"change links between versions: {len(lattice.change_links)}")
+    router = Router(index, catalog, lattice)
     pools = []
     for q in bench.load():
         qv = embed_query(q["question"])
@@ -46,7 +49,7 @@ def build_pools() -> list[dict]:
         rrf = 1 / (60 + np.argsort(np.argsort(-dense))) + 1 / (60 + np.argsort(np.argsort(-bm25)))
         top = np.argsort(-rrf)[:100]
         pools.append({"id": q["id"], "idx": idx, "X": feats, "y": y, "n_gold": len(q["gold"]),
-                      "edges": pool_edges(index, idx),
+                      "edges": pool_edges(index, idx, lattice=lattice),
                       "n_pos_total": len(pos), "route_recall": len(gold_docs & pool_docs) / max(1, len(gold_docs)),
                       "baseline_top": [index.units[i]["id"] in pos for i in top]})
         print(f"{q['id']}: pool {len(idx):5d}, positives in pool {int(y.sum()):3d}/{len(pos):3d}, "
