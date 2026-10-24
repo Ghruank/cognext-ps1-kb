@@ -9,6 +9,11 @@ __pycache__/
 *.pyc
 # local indexes / caches
 storage/
+# ALPHA's trained coherence model is part of the deployed API
+!alpha/storage/
+alpha/storage/*
+!alpha/storage/coherence.pkl
+nexus/collections/
 .cache/
 outputs/
 eval/.cache/

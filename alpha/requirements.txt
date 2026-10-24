@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+fastembed
+scikit-learn
+numpy
+scipy
+PyMuPDF
+bm25s
+model2vec
+requests
+python-dotenv
+langfuse
