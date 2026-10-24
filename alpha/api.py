@@ -38,7 +38,7 @@ def _collection(name: str) -> tuple:
     with _lock:
         if name not in _loaded:
             if not (pipeline.STORE / f"{name}_graph.pkl").exists():
-                raise HTTPException(404, "Collection is not indexed")
+                raise HTTPException(404, "unknown collection")
             _loaded[name] = pipeline.load(name)
         return _loaded[name]
 
@@ -65,7 +65,7 @@ async def index_documents(collection_name: str = Form(...), file: UploadFile = F
             raise HTTPException(400, str(e)) from e
     with _lock:
         _loaded.pop(name, None)
-    return {"status": "indexed", "collection_name": name, **stats}
+    return {"status": "success", "collection_name": name, "documents_indexed": stats["documents"], **stats}
 
 
 @app.post("/query")
@@ -74,8 +74,16 @@ def query_collection(body: QueryRequest):
     with query_observation(body.query) as gen:
         result = pipeline.query(body.query, graph, tree)
         finish_observation(gen, result)
-    return {"answer": result["answer"],
-            "chunks": [{"text": c["text"], "doc": c["doc"], "page": c["pages"][0], "pages": c["pages"],
-                        "citation": f"[{c['doc']} p{c['pages'][0]}]", "id": c["id"]} for c in result["chunks"]],
+    # Contract: chunks[].content + metadata.file_name (corpus file name) + metadata.page_numbers (1-based)
+    return {"answer": result["answer"] or "The documents do not contain this information.",
+            "chunks": [{"content": c["text"],
+                        "metadata": {"file_name": c["doc"], "page_numbers": [int(p) for p in _pages(c["pages"])],
+                                     "unit_id": c["id"]}} for c in result["chunks"]],
             "trace": result["trace"],
             "usage": {"tokens": result["tokens"], "latency_s": round(result["latency_s"], 2)}}
+
+
+def _pages(pages) -> list:
+    if isinstance(pages, (list, tuple)):
+        return list(pages)
+    return [int(x) for x in str(pages).strip("[]").split(",") if x.strip()]
