@@ -56,6 +56,12 @@ on proxy labels with 5-fold question-grouped CV, so every number above is out-of
 * Groq free tier (8k TPM) makes live verification slow: one question's verify step takes minutes
   and can stall on rate limits. The refine stage itself needs no LLM and takes under 1 s.
 
+## What the deployed engine runs
+
+Only `alpha/` (plus the shared `engine/` index helpers and `eval/` it imports) backs the API.
+`neo/`, `nexus/` and STAR (`engine/` selector, `scripts/`) are kept as the comparison codebase.
+alpha never imports from `neo/` or `nexus/`.
+
 ## API (the submission endpoints)
 
 ```
