@@ -3,14 +3,20 @@
     .venv/bin/uvicorn alpha.api:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
+import json
+import os
 import re
+import shutil
 import tempfile
 import threading
 import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from alpha import pipeline
 from alpha.index import index_folder
@@ -21,6 +27,9 @@ COLLECTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 _loaded: dict[str, tuple] = {}
 _lock = threading.Lock()
+_jobs: dict[str, asyncio.Future] = {}   # collection -> running index job (a retry joins it)
+KEEPALIVE_S = 15
+WORKERS = os.cpu_count() or 8
 
 
 class QueryRequest(BaseModel):
@@ -43,10 +52,28 @@ def _collection(name: str) -> tuple:
         return _loaded[name]
 
 
+def _run_index(tmp: str, name: str) -> dict:
+    try:
+        stats = index_folder(str(Path(tmp) / "docs"), name, workers=WORKERS)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    with _lock:
+        _loaded.pop(name, None)
+    return {"status": "success", "collection_name": name, "documents_indexed": stats["documents"], **stats}
+
+
 @app.post("/index")
 async def index_documents(collection_name: str = Form(...), file: UploadFile = File(...)):
+    """Synchronous for the caller: the body completes only when the collection is queryable.
+
+    Indexing runs in a worker thread so /query stays responsive, and the response streams a space
+    every few seconds until the JSON result, so proxies (ngrok) never see an idle connection.
+    Leading whitespace is valid JSON. A retry for a collection already being indexed joins that job.
+    """
     name = _check(collection_name)
-    with tempfile.TemporaryDirectory(prefix="alpha-index-") as tmp:
+    job = _jobs.get(name)
+    if job is None or job.done():
+        tmp = tempfile.mkdtemp(prefix="alpha-index-")
         archive = Path(tmp) / "upload.zip"
         archive.write_bytes(await file.read())
         docs = Path(tmp) / "docs"
@@ -58,14 +85,32 @@ async def index_documents(collection_name: str = Form(...), file: UploadFile = F
                         raise HTTPException(400, "ZIP contains an unsafe path")
                 zf.extractall(docs)
         except zipfile.BadZipFile as e:
+            shutil.rmtree(tmp, ignore_errors=True)
             raise HTTPException(400, "Invalid ZIP archive") from e
+        except HTTPException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        archive.unlink()
+        if not any(p.suffix.lower() == ".pdf" for p in docs.rglob("*")):
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise HTTPException(400, "ZIP contains no PDF documents")
+        job = asyncio.ensure_future(run_in_threadpool(_run_index, tmp, name))
+        _jobs[name] = job
+
+    async def body():
+        while not job.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(job), timeout=KEEPALIVE_S)
+            except asyncio.TimeoutError:
+                yield b" "
+            except Exception:
+                break
         try:
-            stats = index_folder(str(docs), name)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-    with _lock:
-        _loaded.pop(name, None)
-    return {"status": "success", "collection_name": name, "documents_indexed": stats["documents"], **stats}
+            yield json.dumps(job.result()).encode()
+        except Exception as e:  # headers are already sent; report the failure in the body
+            yield json.dumps({"status": "error", "collection_name": name, "detail": str(e)}).encode()
+
+    return StreamingResponse(body(), media_type="application/json")
 
 
 @app.post("/query")

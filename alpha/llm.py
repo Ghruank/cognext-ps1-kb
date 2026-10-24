@@ -35,6 +35,8 @@ _lock = threading.Lock()
 _windows: dict[tuple, deque] = {(k, m): deque() for k in KEYS for m in MODELS}  # (time, tokens), last minute
 _blocked_until: dict[tuple, float] = {b: 0.0 for b in _windows}
 _exhausted: set[tuple] = set()
+OPENCODE_COOLDOWN_S = 60
+_opencode_down_until = 0.0
 
 
 def _estimate(system: str, user: str, max_tokens: int) -> int:
@@ -173,5 +175,18 @@ def chat(system: str, user: str, *, max_tokens: int = 2000, json_mode: bool = Fa
         return _gemini(system, user, max_tokens=max_tokens, json_mode=json_mode, kind=kind, retries=retries)
     if provider == "opencode":
         from engine.llm import chat as opencode_chat
-        return opencode_chat(system, user, max_tokens=max_tokens, json_mode=json_mode, kind=kind, retries=retries)
+        # deepseek can spend small budgets on hidden reasoning; give it room
+        return opencode_chat(system, user, max_tokens=max(max_tokens, 6000), json_mode=json_mode, kind=kind, retries=retries)
+    if provider == "opencode-first":
+        # OpenCode credits first; Groq whenever OpenCode is out of budget or failing. A failure parks
+        # OpenCode for OPENCODE_COOLDOWN_S, so a dead key costs one quick attempt per minute, not per call.
+        global _opencode_down_until
+        if time.time() >= _opencode_down_until:
+            from engine.llm import chat as opencode_chat
+            try:
+                # deepseek can spend small budgets on hidden reasoning; give it room
+                return opencode_chat(system, user, max_tokens=max(max_tokens, 6000), json_mode=json_mode, kind=kind, retries=1)
+            except RuntimeError as e:
+                _opencode_down_until = time.time() + OPENCODE_COOLDOWN_S
+                print(f"opencode unavailable, using groq for {OPENCODE_COOLDOWN_S}s: {e}"[:200], flush=True)
     return _groq(system, user, max_tokens=max_tokens, json_mode=json_mode, kind=kind, models=models, retries=retries)
